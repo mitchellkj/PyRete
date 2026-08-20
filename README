@@ -1,0 +1,67 @@
+We want to create a demonstration of ReACT agent control being governed by
+pyrete rules engine control rather than LangChain. We will build our code in
+/Users/mitchellkj19/veytel/pulmoviz-python/PyReteDemo.  The objective is to
+mirror a demo from Hand-On Large Language Models by Alammar et al.  In this publications
+the authors introduce a LangChain coordinator that is triggered by a user request to
+find the current cost of an iPad or other hardware component in a preferred currency
+demomination.  "What is the latest iPad price in Euros?"  We assume tools for Search Engine
+and Calculator.  Initial just stub those tools for iPad and Euros.  We want to first
+examine how pyrete can drive LLM agents. We will use gemini as our LLM but we need to
+figure out where the API key is in our environment. We have purchased a gemini API key and
+have it stored in our secretes manager.  Try building the scaffolding for the demo before
+we hook in actual tools.  Also let's assume we will run from a directory local venv under PyReteDemo.
+Pick a name for that enviorment and provide a requirement.txt to pull in pyrete and anything else
+we need to get running.
+
+
+Something is wrong with getting PyCharm to recognize my python3.14 which appears to be
+correct in the venv I created and am using in Terminal.
+simple_demo.py	venv
+mitchellkj19@Kevins-Mac-mini-2 PyRete % source venv/bin/activate
+(venv) mitchellkj19@Kevins-Mac-mini-2 PyRete % ls
+simple_demo.py	venv
+(venv) mitchellkj19@Kevins-Mac-mini-2 PyRete % python --version
+Python 3.14.7
+(venv) mitchellkj19@Kevins-Mac-mini-2 PyRete %
+
+However after creating the Project in PyCharm and pointing it at the $HOME/freelance/PyRete and using
+
+
+It seems like PyCharm is latching on to an old virtual environment possibly from another project?
+× This environment is externally managed
+╰─> This Python installation is managed by uv and should not be modified.
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+(python) mitchellkj19@Kevins-Mac-mini-2 PyRete % uv pip install py_rete google-genai python-dotenv langchain
+  langchain-community duckduckgo-search numexpr
+error: Failed to inspect Python interpreter from active virtual environment at `PyReteDemo/venv/lib/python/bin/python3`
+  Caused by: Python interpreter not found at `/Users/mitchellkj19/freelance/PyRete/PyReteDemo/venv/lib/python/bin/python3`
+zsh: command not found: langchain-community
+(python) mitchellkj19@Kevins-Mac-mini-2 PyRete %
+
+The actual venv is in /Users/mitchellkj19/freelance/PyRete/venv which I can activate and see the python3.12 is being
+used via the Terminal tool.  I have no idea why PyCharm is fishing back to another project and venv?
+
+Terrific.  The light demo works.  Now let's explore.  En route to our ultimate goal with this demo we want to
+represent a set of Tools.  Write a class that extends Fact called Tool.  A Tool Fact will have a name, description, and
+func attribute.  The func will actually point to a local python function that can run the tool but for now just
+stub the func functions to say "Executing Tool {name}"
+Create a new top level tester function called react_demo that will create it's own ReteNetwork deposit 2 Tools
+for DuckDuckGo search and Calculator.  Use this code as a reference.
+from langchain.agents import load_tools, Tool
+from langchain.tools import DuckDuckGoSearchResults
+
+# You can create the tool to pass to an agent
+search = DuckDuckGoSearchResults()
+search_tool = Tool(
+    name="duckduck",
+    description="A web search engine. Use this to as a search engine for general queries.",
+    func=search.run,
+)
+
+# Prepare tools
+tools = load_tools(["llm-math"], llm=openai_llm)
+tools.append(search_tool)
+The first iteration will merely define a Tool Fact make two of them and proivde a single Production that
+awakes againt a Tool and acknowleges it.  Let's call the Production RegisterTool.
