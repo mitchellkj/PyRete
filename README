@@ -65,3 +65,17 @@ tools = load_tools(["llm-math"], llm=openai_llm)
 tools.append(search_tool)
 The first iteration will merely define a Tool Fact make two of them and proivde a single Production that
 awakes againt a Tool and acknowleges it.  Let's call the Production RegisterTool.
+
+Go ahead and make the code changes as we have committed the previous branch.  Also keep the lights demo in the
+code for reference.
+
+Now let's try to fork up functions for Tools.  To achieve this we will write a new Production RunTool that will
+use lambda like calling from the func attribute.  But while we match and interrogate tools we don't want
+@Production(V("tool") << Tool())
+def RegisterTool(net, tool):
+    print(f"[RegisterTool] Acknowledged tool: '{tool['name']}' - {tool['description']}")
+    net.remove_fact(tool)
+To run again.  So let's try to create a state attribute on Tool the can be "Registering" | "Running"
+Change RegisterTool to Filter on only Tools with the Registering state, and rather than retract use update to
+the new state of Running.   RunTool Production will call the helper and retract the Tool.  This sequence will
+let us explore py_rete Filter, python lambda like reflectivity.  Among other things.
