@@ -79,3 +79,61 @@ To run again.  So let's try to create a state attribute on Tool the can be "Regi
 Change RegisterTool to Filter on only Tools with the Registering state, and rather than retract use update to
 the new state of Running.   RunTool Production will call the helper and retract the Tool.  This sequence will
 let us explore py_rete Filter, python lambda like reflectivity.  Among other things.
+
+Before we continue exploring possibilities with py_rete coordinating a LLM which in turns coordinates a set of
+tools.  Let's try to work with LangChain to do the same thing.  We have created a react_langchain.py that
+uses LangChain coordinate.  Currently react_langchain.py uses OpenAI and expects a API_KEY.  We want to swap in
+Google Gemi and pull the AI Key from our SecretsManager.  For example.
+
+def get_gemini_response(question: str, prompt: List[str]) -> str:
+    """
+    Load Google model and provide Mongo query as response.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set.")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    response = model.generate_content([prompt[0], question])
+    query_str = response.text.strip()  # Strip whitespace for cleaner parsing
+    logger.info(f"[agentic:get_gemini] Generated query for '{question[:50]}...': {query_str}")
+    return query_str
+
+Lock at ./backend/agentic/agentic.py and agentic_endpoint.py and set up react_langchain.py to use Gemini with our
+API_KEY.  Then clean up the code in react_langchain.py creating a __main__ entry point.  Create a requirements.txt
+for all imports.  Include those needed by simple_demo.py
+
+Can you help me understand LangChain here?
+Gemini chooses some sites to make the query in a RAG like fashion but why is Wikipedia failing on the
+ DDGSException('ConnectError: ConnectError(\'error sending request...  What is DDGS?  I then asks
+ grokipedia and a duck duck site.  So it's looking in three places but not Apple?
+ It seems like so much info is not visible like how many cycles did it run?
+ /Users/mitchellkj19/freelance/PyRete/venv/bin/python /Users/mitchellkj19/freelance/PyRete/react_langchain.py
+======================================================================
+🤖 LangChain ReAct Agent (Gemini + DuckDuckGo + Math Tools)
+======================================================================
+2026-08-20 17:00:19,548 [INFO] Fetching secret 'gemini-api-key' from GCP project 'veytel-cloud-store'...
+2026-08-20 17:00:21,552 [INFO] API key successfully retrieved from Secret Manager (39 chars).
+2026-08-20 17:00:21,628 [INFO] NumExpr defaulting to 8 threads.
+
+User Query: What is the current price of a MacBook Pro in USD? How much would it cost in EUR if the exchange rate is 0.85 EUR for 1 USD?
+
+
+
+> Entering new AgentExecutor chain...
+Action: duckduck
+Action Input: current price of MacBook Pro in USD2026-08-20 17:00:23,242 [INFO] Error in engine wikipedia: DDGSException('ConnectError: ConnectError(\'error sending request for url (https://wt.wikipedia.org/w/api.php?action=opensearch&profile=fuzzy&limit=1&search=current%20price%20of%20MacBook%20Pro%20in%20USD) > client error (Connect) > dns error > DNS error: no records found for Query { name: Name("wt.wikipedia.org."), query_type: A, query_class: IN }\')')
+2026-08-20 17:00:23,571 [INFO] response: https://grokipedia.com/api/typeahead?query=current+price+of+MacBook+Pro+in+USD&limit=1 200
+2026-08-20 17:00:24,713 [INFO] HTTP Request: POST https://html.duckduckgo.com/html/ "HTTP/2 200 OK"
+snippet: The original MSRP price in the United States for all MacBook Pro models; 2006-Current. EveryMac.com USA Mac Pricing always has been diligently hand compiled and configured., title: Original Prices for All MacBook Pro in the United States (2006-Current ..., link: https://everymac.com/global-mac-prices/all-msrp-macbook-pro-prices-in-united-states.html, snippet: Steve H Posted on August 13, 2026 Our Apple award-winning MacBook Price Trackers are continually updated with the latest information on prices, bundles, and availability for the new MacBook Neo, 16″ and 14″ M5, M5 Pro, & M5 Max MacBook Pros, along with 13″ and 15″ M5 MacBook Airs from Apple's authorized online retailers., title: Updated MacBook Price Trackers, link: https://www.macprices.net/2026/08/13/updated-macbook-price-trackers-9/, snippet: As of mid-2024, the Apple MacBook Pro starts at $1,699 for the 14-inch M4 base model, but real-world cost ranges from $1,699 to over $7,800 depending on configuration, region, and purchase channel—making 'MacBook Pro cost' one of the most context-dependent tech pricing questions today., title: How Much Does a MacBook Pro Cost in 2024-2025?, link: https://electronics.alibaba.com/question/macbook-pro-cost-breakdown-real-prices-what-you-actually-pay, snippet: As of November 9, 2025, Apple's MacBook lineup includes the lightweight MacBook Air with the M4 chip and the more powerful MacBook Pro series featuring M5, M4 Pro, and M4 Max chips. The latest updates include the March 2025 refresh of the MacBook Air with M4 (introducing a new Sky Blue color and a starting price of $999) and the October 2025 release of the base 14-inch MacBook Pro with M5 ..., title: The Apple MacBook Price List in the USA 2026 | Rank1one, link: https://rank1one.com/apple-macbook-price-list/Action: Calculator
+Action Input: 1699 * 0.85Answer: 1444.1499999999999I now know the final answer
+Final Answer: The current starting price for a MacBook Pro (14-inch M4 base model) is $1,699 USD. This would cost approximately 1444.15 EUR.
+
+> Finished chain.
+
+======================================================================
+🎯 Final Agent Output:
+The current starting price for a MacBook Pro (14-inch M4 base model) is $1,699 USD. This would cost approximately 1444.15 EUR.
+======================================================================
+
+Process finished with exit code 0

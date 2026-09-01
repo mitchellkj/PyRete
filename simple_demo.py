@@ -1,4 +1,5 @@
 from py_rete.common import V
+from py_rete.conditions import Filter
 from py_rete.fact import Fact
 from py_rete.network import ReteNetwork
 from py_rete.production import Production
@@ -39,7 +40,7 @@ def lights_demo():
 class Tool(Fact):
     """Fact representing an available agent Tool in working memory."""
 
-    def __init__(self, name=None, description=None, func=None, **kwargs):
+    def __init__(self, name=None, description=None, func=None, state=None, **kwargs):
         init_kwargs = {}
         if name is not None:
             init_kwargs["name"] = name
@@ -47,36 +48,51 @@ class Tool(Fact):
             init_kwargs["description"] = description
         if func is not None:
             init_kwargs["func"] = func
+        if state is not None:
+            init_kwargs["state"] = state
         init_kwargs.update(kwargs)
         super().__init__(**init_kwargs)
 
 
-def stub_duckduck(query: str = "") -> str:
-    print("Executing Tool duckduck")
-    return f"Search results for: {query}"
+def stub_duckduck(query: str = "latest iPad price") -> str:
+    print("  Executing Tool duckduck")
+    return f"Search results for: '{query}'"
 
 
-def stub_calculator(expression: str = "") -> str:
-    print("Executing Tool calculator")
-    return f"Calculated result for: {expression}"
+def stub_calculator(expression: str = "800 * 0.92") -> str:
+    print("  Executing Tool calculator")
+    return f"Calculated result for: '{expression}'"
 
 
-@Production(V("tool") << Tool())
+@Production((V("tool") << Tool()) & Filter(lambda tool: tool.get("state") == "Registering"))
 def RegisterTool(net, tool):
-    print(f"[RegisterTool] Acknowledged tool: '{tool['name']}' - {tool['description']}")
+    print(f"[RegisterTool] Acknowledging '{tool['name']}' (state: {tool.get('state')}) -> updating to 'Running'")
+    tool["state"] = "Running"
+    net.update_fact(tool)
+
+
+@Production((V("tool") << Tool()) & Filter(lambda tool: tool.get("state") == "Running"))
+def RunTool(net, tool):
+    print(f"[RunTool] Dispatching tool '{tool['name']}' via reflective func...")
+    # Dynamic / lambda-like invocation of the tool's func
+    func = tool["func"]
+    result = func()
+    print(f"[RunTool] Completed '{tool['name']}' with result: {result}")
     net.remove_fact(tool)
 
 
 def react_demo():
-    print("\n=== Running ReACT Tool Registration Demo ===")
+    print("\n=== Running ReACT Tool Registration & Execution Demo ===")
     net = ReteNetwork()
     net.add_production(RegisterTool)
+    net.add_production(RunTool)
 
     # 1. DuckDuckGo search tool
     search_tool = Tool(
         name="duckduck",
         description="A web search engine. Use this to as a search engine for general queries.",
         func=stub_duckduck,
+        state="Registering",
     )
 
     # 2. Calculator tool (analogous to llm-math)
@@ -84,13 +100,14 @@ def react_demo():
         name="calculator",
         description="A calculator tool for math expressions.",
         func=stub_calculator,
+        state="Registering",
     )
 
     # Deposit the 2 tools into working memory
     net.add_fact(search_tool)
     net.add_fact(calc_tool)
 
-    # Run the network to process rule activations
+    # Run the network to process rule activations (RegisterTool -> update state -> RunTool -> retract)
     net.run()
 
 
@@ -105,3 +122,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
