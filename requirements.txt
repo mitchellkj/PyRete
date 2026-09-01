@@ -1,0 +1,24 @@
+# PyRete & LangChain ReAct Demo Requirements
+
+# py_rete (master branch from GitHub with ReteNetwork, Fact, Production, V, Filter)
+py_rete @ git+https://github.com/cmaclell/py_rete.git@master
+
+# LangChain core & community (pinned to 0.3.x series for classic ReAct AgentExecutor compatibility)
+langchain>=0.2.0,<0.4.0
+langchain-core>=0.2.0,<0.4.0
+langchain-community>=0.2.0,<0.4.0
+
+
+# Google Gemini / GenAI integrations
+langchain-google-genai>=1.0.0
+google-generativeai>=0.5.0
+google-cloud-secret-manager>=2.18.0
+
+# Tools for search and math
+duckduckgo-search>=6.0.0
+ddgs>=0.1.0
+numexpr>=2.8.0
+
+
+# Utilities
+python-dotenv>=1.0.0
