@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-react_langchain.py: ReAct agent powered by LangChain and Google Gemini.
-
-Demonstrates ReAct loop coordination using Gemini (with API key fetched from
-environment variables or Google Cloud Secret Manager) and equipped with
-DuckDuckGo Search and Math calculation tools.
+react_langchain_verbose.py: ReAct agent powered by LangChain and Google Gemini
+with maximum verbose logging, debug tracing, and step inspection enabled.
 """
 
 import os
@@ -12,10 +9,33 @@ import logging
 import warnings
 from typing import Optional
 
-# Suppress benign community & library deprecation notices for cleaner CLI output
+# Enable debug logging across standard library and LangChain components
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Suppress noisy deprecation warnings while retaining debug traces
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*LangChainDeprecationWarning.*")
+
+# Force LangChain global environment flags for maximum verbosity
+os.environ["LANGCHAIN_VERBOSE"] = "true"
+os.environ["LANGCHAIN_DEBUG"] = "true"
+
+try:
+    from langchain_core.globals import set_debug, set_verbose
+    set_debug(True)
+    set_verbose(True)
+except ImportError:
+    try:
+        import langchain
+        langchain.debug = True
+        langchain.verbose = True
+    except (ImportError, AttributeError):
+        pass
 
 try:
     from langchain_community.agent_toolkits.load_tools import load_tools
@@ -36,10 +56,6 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import Tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
 
 def get_gemini_api_key(
         secret_id: str = "gemini-api-key",
@@ -49,7 +65,6 @@ def get_gemini_api_key(
     """
     Retrieve Gemini API key from environment variables (GEMINI_API_KEY / GOOGLE_API_KEY)
     or directly from Google Cloud Secret Manager if not present in the environment.
-    Mirrors the pattern in backend/main.py and backend/agentic/agentic.py.
     """
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if api_key:
@@ -82,16 +97,18 @@ def build_react_agent(
         model_name: str = "gemini-2.5-flash",
 ) -> AgentExecutor:
     """
-    Constructs and returns the ReAct agent executor configured with Gemini and tools.
+    Constructs and returns the ReAct agent executor configured with Gemini and tools,
+    with all debug and verbose execution parameters activated.
     """
     if not api_key:
         api_key = get_gemini_api_key()
 
-    # 1. Initialize Gemini LLM
+    # 1. Initialize Gemini LLM with verbose callbacks
     gemini_llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=api_key,
         temperature=0,
+        verbose=True,
     )
 
     # 2. Define ReAct Prompt Template
@@ -126,17 +143,21 @@ Thought:{agent_scratchpad}"""
         name="duckduck",
         description="A web search engine. Use this to search the web for general queries, latest prices, and news.",
         func=search.run,
+        verbose=True,
     )
 
     tools = load_tools(["llm-math"], llm=gemini_llm)
+    for tool in tools:
+        tool.verbose = True
     tools.append(search_tool)
 
-    # 4. Construct ReAct agent & executor
+    # 4. Construct ReAct agent & executor with verbose & intermediate step tracking
     agent = create_react_agent(gemini_llm, tools, prompt)
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
+        return_intermediate_steps=True,
         handle_parsing_errors=True,
         max_iterations=10,
     )
@@ -147,7 +168,7 @@ Thought:{agent_scratchpad}"""
 def main():
     """Main execution entry point."""
     print("=" * 70)
-    print("🤖 LangChain ReAct Agent (Gemini + DuckDuckGo + Math Tools)")
+    print("🤖 LangChain ReAct Agent [VERBOSE DEBUG MODE] (Gemini + Tools)")
     print("=" * 70)
 
     try:
@@ -158,6 +179,20 @@ def main():
         )
         print(f"\nUser Query: {query}\n")
         response = agent_executor.invoke({"input": query})
+
+        # Detailed inspection of intermediate steps
+        intermediate_steps = response.get("intermediate_steps", [])
+        if intermediate_steps:
+            print("\n" + "-" * 70)
+            print(f"📋 Intermediate ReAct Steps ({len(intermediate_steps)} total):")
+            print("-" * 70)
+            for idx, (action, observation) in enumerate(intermediate_steps, start=1):
+                print(f"Step {idx}:")
+                print(f"  • Tool       : {action.tool}")
+                print(f"  • Tool Input : {action.tool_input}")
+                print(f"  • Log / Thought: {action.log.strip()}")
+                print(f"  • Observation: {observation}\n")
+
         print("\n" + "=" * 70)
         print("🎯 Final Agent Output:")
         print(response.get("output", response))
