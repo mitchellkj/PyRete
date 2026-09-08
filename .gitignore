@@ -3,3 +3,52 @@ __pycache__/
 .idea/
 chapter7.ipynb
 backend/
+# ===== Frontend (Next.js + pnpm) =====
+frontend/node_modules/
+frontend/.pnpm-store/
+frontend/.pnp
+frontend/.pnp.js
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+
+# Env files (frontend)
+frontend/.env
+frontend/.env*.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/.pnpm-debug.log*
+
+# Vercel
+frontend/.vercel
+
+# Testing
+frontend/coverage/
+frontend/.nyc_output/
+
+# Turbo (if used)
+frontend/.turbo/
+
+# ===== Common / OS / IDE =====
+.DS_Store
+Thumbs.db
+*.pem
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Optional: if you ever run pnpm from the repo root
+node_modules/
+.pnpm-store/

@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-react_pyrete.py: ReAct agent coordinator powered by PyRete forward-chaining rules.
+react_pyrete_lamma.py: Container-ready ReAct coordinator using PyRete rules & Ollama.
 
-Replaces LangChain's AgentExecutor with a goal-driven production rule network:
-  - Working memory contains first-class Fact objects for:
-      • Goal (alternating "Reason" and "Act" until "Finished")
-      • Question, Thought, Action, ActionInput, Observation, FinalAnswer
-      • Tools registered directly as facts
-  - The "Reason" rule assembles the ReAct prompt from working memory and queries Gemini.
-  - The "Act" rule parses the LLM output, executes the selected Tool, asserts the
-    Observation fact, and transitions the goal back to "Reason".
+Swaps Google Gemini with a local, open-source LLM via Ollama (e.g. Llama 3.2 1B/3B, Qwen 2.5).
+Designed for low-footprint deployment on Hugging Face Spaces or container stacks:
+  - Zero proprietary API dependencies (fully self-hosted).
+  - Native Ollama HTTP REST interface with fallback to langchain_ollama/langchain_community.
+  - Configurable via OLLAMA_HOST and OLLAMA_MODEL environment variables.
+  - Uses stop-token truncation ('Observation:') essential for small parameter models.
 """
 
 import os
 import re
 import sys
+import json
 import logging
+import urllib.request
+import urllib.error
 import warnings
 from typing import Optional, List, Dict, Any
 
@@ -24,12 +25,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 from py_rete.common import V
-from py_rete.conditions import Filter
 from py_rete.fact import Fact
 from py_rete.network import ReteNetwork
 from py_rete.production import Production
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from tool import Tool, DuckDuckGoSearcher, Calculator
 
 # Configure logging
@@ -38,11 +37,92 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# 1. Fact Hierarchy for ReAct Working Memory
+# 1. Lightweight Ollama Client Wrapper
+# =============================================================================
+
+class OllamaResponse:
+    """Standardized response object matching LangChain's invoke interface."""
+
+    def __init__(self, content: str):
+        self.content = content
+
+    def __repr__(self):
+        return f"OllamaResponse(content={self.content[:60]!r}...)"
+
+
+class OllamaLLM:
+    """
+    Lightweight client for Ollama's HTTP API.
+    Can be configured via:
+      - OLLAMA_HOST: URL of the Ollama server (default: http://localhost:11434)
+      - OLLAMA_MODEL: Model tag to use (default: llama3.2:3b or llama3.2:1b for minimal footprint)
+    """
+
+    def __init__(
+            self,
+            model: Optional[str] = None,
+            base_url: Optional[str] = None,
+            temperature: float = 0.0,
+            stop: Optional[List[str]] = None,
+    ):
+        self.base_url = (
+                base_url
+                or os.environ.get("OLLAMA_HOST")
+                or "http://localhost:11434"
+        ).rstrip("/")
+        # Recommended minimal models for Hugging Face Spaces: llama3.2:1b, llama3.2:3b, qwen2.5:1.5b
+        self.model = model or os.environ.get("OLLAMA_MODEL") or "llama3.2:3b"
+        self.temperature = temperature
+        self.stop = stop or ["\nObservation:", "Observation:"]
+
+        logger.info(
+            f"Initialized OllamaLLM using model '{self.model}' at '{self.base_url}'"
+        )
+
+    def invoke(self, prompt: str) -> OllamaResponse:
+        """Invokes Ollama generate endpoint and returns an OllamaResponse."""
+        endpoint = f"{self.base_url}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "stop": self.stop,
+            },
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result_raw = response.read().decode("utf-8")
+                result_json = json.loads(result_raw)
+                content = result_json.get("response", "")
+                return OllamaResponse(content=content)
+        except urllib.error.URLError as e:
+            msg = (
+                f"Failed to connect to Ollama at '{self.base_url}': {e}.\n"
+                f"Make sure Ollama is running (`ollama serve`) and model '{self.model}' is pulled "
+                f"(`ollama pull {self.model}`)."
+            )
+            logger.error(msg)
+            raise ConnectionError(msg) from e
+
+
+# =============================================================================
+# 2. Fact Hierarchy for ReAct Working Memory
 # =============================================================================
 
 class BaseReActFact(Fact):
     """Base fact ensuring class kind is preserved in working memory."""
+
     def __init__(self, **kwargs):
         kwargs.setdefault("kind", self.__class__.__name__)
         clean_kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -51,6 +131,7 @@ class BaseReActFact(Fact):
 
 class Goal(BaseReActFact):
     """Goal fact driving forward-chaining activation ('Reason', 'Act', 'Finished')."""
+
     def __init__(self, goal_type: Optional[str] = None, **kwargs):
         if goal_type is not None:
             kwargs["goal_type"] = goal_type
@@ -59,6 +140,7 @@ class Goal(BaseReActFact):
 
 class Question(BaseReActFact):
     """Fact wrapping the user's input question."""
+
     def __init__(self, text: Optional[str] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -67,6 +149,7 @@ class Question(BaseReActFact):
 
 class Thought(BaseReActFact):
     """Fact wrapping an agent's reasoning step."""
+
     def __init__(self, text: Optional[str] = None, step: Optional[int] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -77,6 +160,7 @@ class Thought(BaseReActFact):
 
 class Action(BaseReActFact):
     """Fact wrapping the selected tool name."""
+
     def __init__(self, name: Optional[str] = None, step: Optional[int] = None, **kwargs):
         if name is not None:
             kwargs["name"] = name
@@ -87,6 +171,7 @@ class Action(BaseReActFact):
 
 class ActionInput(BaseReActFact):
     """Fact wrapping the tool input parameter."""
+
     def __init__(self, text: Optional[str] = None, step: Optional[int] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -97,6 +182,7 @@ class ActionInput(BaseReActFact):
 
 class Observation(BaseReActFact):
     """Fact wrapping the tool execution result."""
+
     def __init__(self, text: Optional[str] = None, step: Optional[int] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -107,6 +193,7 @@ class Observation(BaseReActFact):
 
 class FinalAnswer(BaseReActFact):
     """Fact wrapping the agent's final answer."""
+
     def __init__(self, text: Optional[str] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -115,6 +202,7 @@ class FinalAnswer(BaseReActFact):
 
 class LLMPrediction(BaseReActFact):
     """Fact holding the raw text response from the LLM during Reason phase."""
+
     def __init__(self, text: Optional[str] = None, step: Optional[int] = None, **kwargs):
         if text is not None:
             kwargs["text"] = text
@@ -125,6 +213,7 @@ class LLMPrediction(BaseReActFact):
 
 class StepTracker(BaseReActFact):
     """Fact tracking current loop step and iteration limits."""
+
     def __init__(self, current_step: Optional[int] = None, max_steps: Optional[int] = None, **kwargs):
         if current_step is not None:
             kwargs["current_step"] = current_step
@@ -134,7 +223,7 @@ class StepTracker(BaseReActFact):
 
 
 # =============================================================================
-# 2. ReAct Prompt Template & Parsing Helpers
+# 3. ReAct Prompt Template & Parsing Helpers
 # =============================================================================
 
 REACT_PROMPT_TEMPLATE = """Answer the following questions as best you can. You have access to the following tools:
@@ -161,6 +250,7 @@ Thought:{scratchpad}"""
 def parse_react_response(text: str) -> Dict[str, Any]:
     """
     Parses LLM response text into thought, action, action_input, or final_answer.
+    Robust against quirks common in smaller local models.
     """
     cleaned = text.strip()
 
@@ -175,20 +265,24 @@ def parse_react_response(text: str) -> Dict[str, Any]:
             "final_answer": final_answer,
         }
 
-    # 2. Extract Thought, Action, Action Input
+    # 2. Extract Action & Action Input
     action_match = re.search(r"Action:\s*(.*?)(?:\n|$)", cleaned, re.IGNORECASE)
-    action_input_match = re.search(r"Action Input:\s*(.*)", cleaned, re.IGNORECASE | re.DOTALL)
-    thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|$)", cleaned, re.IGNORECASE | re.DOTALL)
+    action = action_match.group(1).strip("[]'\"` ") if action_match else ""
 
+    if "Action Input:" in cleaned:
+        action_input_raw = cleaned.split("Action Input:", 1)[1]
+        if "\nObservation:" in action_input_raw:
+            action_input_raw = action_input_raw.split("\nObservation:", 1)[0]
+        elif "Observation:" in action_input_raw:
+            action_input_raw = action_input_raw.split("Observation:", 1)[0]
+        action_input = action_input_raw.strip().strip("\"'`")
+    else:
+        action_input = ""
+
+    thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|$)", cleaned, re.IGNORECASE | re.DOTALL)
     thought = thought_match.group(1).strip() if thought_match else ""
     if not thought and not cleaned.lower().startswith("action:"):
         thought = cleaned.split("Action:")[0].strip()
-
-    action = action_match.group(1).strip() if action_match else ""
-    action_input = action_input_match.group(1).strip() if action_input_match else ""
-
-    # Clean action name (remove trailing punctuation or brackets if hallucinated)
-    action = action.strip("[]'\"` ")
 
     return {
         "type": "action",
@@ -198,34 +292,8 @@ def parse_react_response(text: str) -> Dict[str, Any]:
     }
 
 
-def get_gemini_api_key(
-    secret_id: str = "gemini-api-key",
-    version: str = "latest",
-    project_id: str = "veytel-cloud-store",
-) -> str:
-    """Retrieve Gemini API key from environment or Google Cloud Secret Manager."""
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if api_key:
-        return api_key.strip()
-
-    try:
-        from google.cloud import secretmanager
-
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project_id}/secrets/{secret_id}/versions/{version}"
-        response = client.access_secret_version(request={"name": name})
-        api_key = response.payload.data.decode("UTF-8").strip()
-        os.environ["GEMINI_API_KEY"] = api_key
-        os.environ["GOOGLE_API_KEY"] = api_key
-        return api_key
-    except Exception as e:
-        raise ValueError(
-            f"GEMINI_API_KEY not found in environment and Secret Manager lookup failed: {e}"
-        )
-
-
 # =============================================================================
-# 3. PyRete ReAct Coordinator Class
+# 4. PyRete ReAct Coordinator Class
 # =============================================================================
 
 class PyReteReActCoordinator:
@@ -234,17 +302,17 @@ class PyReteReActCoordinator:
     """
 
     def __init__(
-        self,
-        llm: Any,
-        tools: List[Tool],
-        max_iterations: int = 10,
+            self,
+            llm: Any,
+            tools: List[Tool],
+            max_iterations: int = 8,
     ):
         self.llm = llm
         self.tools = {tool.name: tool for tool in tools}
         self.max_iterations = max_iterations
         self.net = ReteNetwork()
 
-        # Register tools directly in working memory as facts
+        # Register tools directly into working memory as facts
         for tool in tools:
             self.net.add_fact(tool)
 
@@ -284,9 +352,7 @@ class PyReteReActCoordinator:
         # ---------------------------------------------------------------------
         # Rule 1: ReasonRule (Goal == "Reason")
         # ---------------------------------------------------------------------
-        @Production(
-            (V("g") << Goal(goal_type="Reason"))
-        )
+        @Production((V("g") << Goal(goal_type="Reason")))
         def reason_production(net, g):
             tracker = self._get_fact_by_kind("StepTracker")
             question_fact = self._get_fact_by_kind("Question")
@@ -295,21 +361,21 @@ class PyReteReActCoordinator:
 
             print(f"\n🧠 [PyRete Reason Phase] Step {current_step} / {max_steps}")
 
-            # Check termination safety
+            # Termination safety
             if current_step > max_steps:
                 print("⚠️ Max iterations reached without final answer.")
                 net.remove_fact(g)
                 net.add_fact(Goal(goal_type="Finished"))
                 return
 
-            # Format tools documentation
+            # Format tools
             tools_desc = "\n".join(f"{t.name}: {t.description}" for t in self.tools.values())
             tool_names = ", ".join(self.tools.keys())
 
-            # Build scratchpad from working memory facts
+            # Build scratchpad from working memory
             scratchpad = self._build_scratchpad(up_to_step=current_step)
 
-            # Assemble ReAct prompt
+            # Assemble prompt
             prompt = REACT_PROMPT_TEMPLATE.format(
                 tools=tools_desc,
                 tool_names=tool_names,
@@ -317,13 +383,13 @@ class PyReteReActCoordinator:
                 scratchpad=scratchpad,
             )
 
-            print(f"  • Invoking Gemini LLM (step {current_step})...")
+            print(f"  • Invoking Ollama ({getattr(self.llm, 'model', 'local')})...")
             response = self.llm.invoke(prompt)
             pred_text = getattr(response, "content", str(response))
 
-            print(f"  • Gemini Raw Prediction:\n{pred_text.strip()}")
+            print(f"  • Ollama Prediction:\n{pred_text.strip()}")
 
-            # Forward chain: transition to Act goal and assert LLMPrediction
+            # Forward chain: transition to Act goal
             net.remove_fact(g)
             net.add_fact(LLMPrediction(text=pred_text, step=current_step))
             net.add_fact(Goal(goal_type="Act"))
@@ -342,13 +408,13 @@ class PyReteReActCoordinator:
             print(f"\n⚡ [PyRete Act Phase] Step {current_step}")
             raw_text = pred.get("text", "")
 
-            # Consume prediction fact and goal
+            # Consume prediction and goal facts
             net.remove_fact(g)
             net.remove_fact(pred)
 
             parsed = parse_react_response(raw_text)
 
-            # Check if LLM reached the Final Answer
+            # Final Answer branch
             if parsed["type"] == "final_answer":
                 final_answer = parsed["final_answer"]
                 thought_text = parsed["thought"]
@@ -360,7 +426,7 @@ class PyReteReActCoordinator:
                 net.add_fact(Goal(goal_type="Finished"))
                 return
 
-            # Otherwise, process Action and Action Input
+            # Action branch
             thought_text = parsed.get("thought", "")
             action_name = parsed.get("action", "")
             action_input = parsed.get("action_input", "")
@@ -369,7 +435,6 @@ class PyReteReActCoordinator:
             print(f"  • Action       : {action_name}")
             print(f"  • Action Input : {action_input}")
 
-            # Assert working memory facts for this step
             if thought_text:
                 net.add_fact(Thought(text=thought_text, step=current_step))
             net.add_fact(Action(name=action_name, step=current_step))
@@ -387,40 +452,34 @@ class PyReteReActCoordinator:
             print(f"  • Observation  :\n{observation_str[:300]}" + ("..." if len(observation_str) > 300 else ""))
             net.add_fact(Observation(text=observation_str, step=current_step))
 
-            # Advance step counter
+            # Advance step tracker
             if tracker:
                 tracker["current_step"] += 1
                 net.update_fact(tracker)
 
-            # Transition goal back to Reason for the next iteration
+            # Cycle back to Reason
             net.add_fact(Goal(goal_type="Reason"))
 
-        # Attach productions to ReteNetwork
         self.net.add_production(reason_production)
         self.net.add_production(act_production)
 
     def run(self, question: str) -> Optional[str]:
         """Runs the PyRete coordinator until Goal == 'Finished' or limit reached."""
         print("=" * 80)
-        print("🚀 PyRete Goal-Driven ReAct Coordinator")
+        print("🦙 PyRete + Ollama ReAct Coordinator (Container-Ready)")
         print(f"❓ Question: {question}")
         print("=" * 80)
 
-        # Initialize working memory facts
         self.net.add_fact(Question(text=question))
         self.net.add_fact(StepTracker(current_step=1, max_steps=self.max_iterations))
         self.net.add_fact(Goal(goal_type="Reason"))
 
-        # Run the Rete forward-chaining cycle
-        # With 2 alternating rules per step, max_steps * 2 firings is plenty
         max_firings = (self.max_iterations * 2) + 2
         self.net.run(max_firings)
 
-        # Retrieve final result
         final_fact = self._get_fact_by_kind("FinalAnswer")
         final_answer = final_fact["text"] if final_fact else None
 
-        # Display working memory breakdown
         print("\n" + "=" * 80)
         print("📋 PyRete Working Memory Fact Audit:")
         print("=" * 80)
@@ -445,31 +504,55 @@ class PyReteReActCoordinator:
 # =============================================================================
 
 def main():
-    api_key = get_gemini_api_key()
-    gemini_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=api_key,
-        temperature=0,
+    # Configure Ollama parameters via environment (defaults to lightweight llama3.2:3b)
+    # For lowest RAM consumption on Hugging Face free tier CPU, set OLLAMA_MODEL="llama3.2:1b"
+    model_name = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
+    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+    print(f"Initializing Ollama with model: '{model_name}' at '{ollama_host}'")
+    ollama_llm = OllamaLLM(
+        model=model_name,
+        base_url=ollama_host,
+        temperature=0.0,
     )
 
-    # Initialize concrete tools from tool.py (without LangChain wrappers)
+    # Initialize concrete tools (no LangChain wrappers)
     tools = [
-        DuckDuckGoSearcher(name="duckduck", max_results=5),
-        Calculator(name="Calculator", llm=gemini_llm),
+        DuckDuckGoSearcher(
+            name="duckduck",
+            description="A web search engine. Use this to search the web for retail purchase prices, starting MSRP, and specs.",
+            max_results=5,
+        ),
+        Calculator(name="Calculator"),
     ]
 
     coordinator = PyReteReActCoordinator(
-        llm=gemini_llm,
+        llm=ollama_llm,
         tools=tools,
         max_iterations=8,
     )
 
     sample_query = (
-        "What is the current price of a MacBook Pro in USD? "
+        "What is the total retail purchase price (MSRP) of a new entry-level MacBook Pro in USD? "
+        "Do not use monthly financing. "
         "How much would it cost in EUR if the exchange rate is 0.85 EUR for 1 USD?"
     )
+    sample_query_precise = (
+        "What is the total retail purchase price (MSRP) of a new entry-level MacBook Pro in USD?"
+        "How much would it cost in EUR if the exchange rate is 0.85 EUR for 1 USD?"
+        "You must answer BOTH question:"
+        "1. The USD MSRP (ignore financing / monthly prices)."
+        "2. The equivalent in EUR using the given exchange rate."
+        "Always use the Calculator tool for the currency conversion. Do not do the math yourself."
+        "Only emit 'Final Answer' after you have both numbers."
+    )
 
-    coordinator.run(sample_query)
+    s = """First find the current USD MSRP of a new entry-level MacBook Pro (no financing). 
+    Then convert that exact USD amount to EUR using the rate 0.85 EUR = 1 USD. 
+    Use the Calculator for the conversion. Report both numbers.
+    """
+
+    coordinator.run(s)
 
 
 if __name__ == "__main__":
