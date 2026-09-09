@@ -39,12 +39,14 @@ interface AuditItem {
 
 interface ApiResponse {
   success: boolean;
+  session_id?: string;
   product: string;
   currency: string;
   exchange_rate: number;
   query: string;
   final_answer: string;
   status: string;
+  cached?: boolean;
   audit_facts: AuditItem[];
 }
 
@@ -53,8 +55,8 @@ const DEFAULT_PRODUCTS: Product[] = [
   { id: "dell_xps_15", name: "Dell XPS 15", category: "Laptop", brand: "Dell" },
   { id: "lenovo_thinkpad_x1", name: "Lenovo ThinkPad X1 Carbon", category: "Laptop", brand: "Lenovo" },
   { id: "asus_rog_g14", name: "ASUS ROG Zephyrus G14", category: "Gaming Laptop", brand: "ASUS" },
-  { id: "surface_laptop_7", name: "Microsoft Surface Laptop 7", category: "Laptop", brand: "Microsoft" },
-  { id: "framework_13", name: "Framework Laptop 13", category: "Modular Laptop", brand: "Framework" },
+  { id: "ipad_pro_m4", name: "Apple iPad Pro M4", category: "Tablet", brand: "Apple" },
+  { id: "galaxy_tab_s9", name: "Samsung Galaxy Tab S9", category: "Tablet", brand: "Samsung" },
   { id: "hp_spectre_x360", name: "HP Spectre x360", category: "2-in-1 Laptop", brand: "HP" },
 ];
 
@@ -82,6 +84,19 @@ export default function PricingDashboard() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [showAudit, setShowAudit] = useState<boolean>(true);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [sessionId, setSessionId] = useState<string>("");
+
+  // Initialize or restore session identifier for working memory scope
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      let sid = localStorage.getItem("pyrete_session_id");
+      if (!sid) {
+        sid = "sess-" + Math.random().toString(36).substring(2, 11);
+        localStorage.setItem("pyrete_session_id", sid);
+      }
+      setSessionId(sid);
+    }
+  }, []);
 
   // Update exchange rate when currency changes
   const handleCurrencySelect = (curr: Currency) => {
@@ -91,7 +106,8 @@ export default function PricingDashboard() {
 
   // Check backend health
   useEffect(() => {
-    fetch("http://localhost:8000/health")
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+    fetch(`${apiBase}/health`)
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
@@ -123,22 +139,31 @@ export default function PricingDashboard() {
     setResponse(null);
 
     try {
-      const res = await fetch("http://localhost:8000/api/pricing", {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+      const res = await fetch(`${apiBase}/api/pricing`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           product: selectedProduct.name,
           currency_code: selectedCurrency.code,
           currency_name: selectedCurrency.name,
           exchange_rate: Number(exchangeRate),
+          session_id: sessionId || undefined,
         }),
       });
 
       if (!res.ok) {
-        throw new Error(`Backend error (${res.status}): Make sure the FastAPI server is running on :8000`);
+        throw new Error(`Backend error (${res.status}): Make sure the FastAPI server is running`);
       }
 
       const data: ApiResponse = await res.json();
+      if (data.session_id && data.session_id !== sessionId) {
+        setSessionId(data.session_id);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("pyrete_session_id", data.session_id);
+        }
+      }
       setResponse(data);
     } catch (err: any) {
       setError(err.message || "Failed to reach backend");
@@ -166,7 +191,13 @@ export default function PricingDashboard() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            {sessionId && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-slate-700 bg-slate-100 border border-slate-200" title={`Session ID: ${sessionId}`}>
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                Session: {sessionId.slice(0, 12)}
+              </span>
+            )}
             <span
               className={`inline-flex items-center px-2.5 py-1 rounded-full font-medium ${
                 backendOnline
@@ -181,7 +212,7 @@ export default function PricingDashboard() {
                   backendOnline ? "bg-emerald-500" : backendOnline === false ? "bg-rose-500" : "bg-slate-400"
                 }`}
               />
-              {backendOnline ? "FastAPI Online (:8000)" : backendOnline === false ? "FastAPI Offline" : "Checking..."}
+              {backendOnline ? "FastAPI Online" : backendOnline === false ? "FastAPI Offline" : "Checking..."}
             </span>
           </div>
         </div>
@@ -349,15 +380,22 @@ export default function PricingDashboard() {
                     : "bg-amber-50/60 border-amber-300"
                 }`}
               >
-                <div className="flex items-center gap-2 mb-2">
-                  {response.success ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                  ) : (
-                    <AlertCircle className="w-5 h-5 text-amber-600" />
+                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    {response.success ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 text-amber-600" />
+                    )}
+                    <h3 className="font-semibold text-slate-900 text-sm">
+                      {response.success ? "Final Answer Result" : "Search Status"}
+                    </h3>
+                  </div>
+                  {response.cached && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      ⚡ Instant (Cached Working Memory)
+                    </span>
                   )}
-                  <h3 className="font-semibold text-slate-900 text-sm">
-                    {response.success ? "Final Answer Result" : "Search Status"}
-                  </h3>
                 </div>
 
                 <div className="text-slate-800 text-sm leading-relaxed whitespace-pre-wrap font-medium">

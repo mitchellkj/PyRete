@@ -1,0 +1,29 @@
+# Version control and IDE
+.git
+.gitignore
+.idea
+.DS_Store
+
+# Python virtual environment and bytecode
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+backend/__pycache__/
+
+# Node / Next.js build artifacts
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Local testing and scratch files
+chapter7.ipynb
+duckduckGo.py
+react_langchain.py
+react_langchain_verbose.py
+react_pyrete.py
+react_pyrete_lamma.py
+simple_demo.py
+tool.py
+11.19.1
