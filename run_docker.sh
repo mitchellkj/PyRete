@@ -24,21 +24,24 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker rm -f "${CONTAINER_NAME}" > /dev/null 2>&1 || true
 fi
 
+# Disable Buildx attestation manifests which cause Docker Desktop on Mac to hang at export
+export DOCKER_BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 # Build Docker image
 echo "🔨 Building Docker image '${IMAGE_NAME}' (this may take a few minutes on first run)..."
-docker build -t "${IMAGE_NAME}" .
+docker buildx build --provenance=false --sbom=false --load -t "${IMAGE_NAME}" .
 
 echo ""
 echo "=================================================================="
 echo "🚀 Starting container '${CONTAINER_NAME}'..."
-echo "📍 Frontend Dashboard: http://localhost:7860"
+echo "📍 Frontend Dashboard: http://localhost:3000"
 echo "📍 FastAPI Docs:       http://localhost:8000/docs"
-echo "📍 Health Endpoint:    http://localhost:7860/health"
+echo "📍 Health Endpoint:    http://localhost:3000/health"
 echo "=================================================================="
 echo "ℹ️  Press Ctrl+C to stop the container."
 echo ""
 
-# Run container mapping ports 7860 (Frontend) and 8000 (Backend)
+# Run container mapping ports 3000 (Frontend) and 8000 (Backend)
 # Optional: pass GEMINI_API_KEY from host environment if available
 ENV_FLAG=""
 if [ -n "$GEMINI_API_KEY" ]; then
@@ -47,7 +50,7 @@ if [ -n "$GEMINI_API_KEY" ]; then
 fi
 
 exec docker run -it \
-    -p 7860:7860 \
+    -p 3000:3000 \
     -p 8000:8000 \
     ${ENV_FLAG} \
     --name "${CONTAINER_NAME}" \

@@ -1,79 +1,73 @@
 # =============================================================================
-# Stage 1: Build Next.js Production Frontend
+# Stage 1: Build Next.js Production Frontend (Standalone Mode)
 # =============================================================================
 FROM node:20-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Install pnpm package manager
-RUN npm install -g pnpm
+# Install dependencies using standard npm (built into node:20-slim)
+COPY frontend/package.json ./
+RUN npm install
 
-# Install dependencies using lockfile for reproducible builds
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-# Copy frontend source code and compile Next.js production bundle
+# Copy frontend source and compile standalone Next.js server
 COPY frontend ./
-RUN pnpm build
+RUN npm run build
 
 # =============================================================================
-# Stage 2: Final Runtime Image (Python 3.11 + Node.js 20)
+# Stage 2: Ultra-Lean Production Runner (Python 3.11 + Minimal Node Runtime)
 # =============================================================================
 FROM python:3.11-slim
 
-# Install system dependencies:
-# - git: Required for pip to clone py_rete repository from GitHub
-# - curl: Used for downloading Node.js and performing health checks
-# - ca-certificates: Secure SSL connections
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    curl \
-    ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Install Python backend dependencies
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# 1. Install runtime dependencies (libstdc++6 is required by Node.js binary) and git for pip install
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy backend application source
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
+    && apt-get purge -y --auto-remove git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Copy standalone Node.js binary from frontend-builder (~90MB, no npm, no apt)
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+
+# Verify Node.js runtime works
+RUN node -v
+
+# 3. Copy backend application source
 COPY backend /app/backend
 
-# Copy pre-persisted working memory cache (49 pre-computed product x currency queries)
+# 4. Copy pre-persisted working memory cache (49 pre-computed queries)
 COPY wm_storage /app/wm_storage
 
-# Copy compiled Next.js frontend (including node_modules and .next build artifacts)
-COPY --from=frontend-builder /app/frontend /app/frontend
+# 5. Copy Next.js standalone server and static assets (minimal pruned modules)
+COPY --from=frontend-builder /app/frontend/.next/standalone /app/frontend
+COPY --from=frontend-builder /app/frontend/.next/static /app/frontend/.next/static
 
-# Copy and prepare entrypoint script
+# 6. Copy and prepare production start script
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-# Configure Hugging Face Spaces non-root user (UID 1000)
-RUN useradd -m -u 1000 user && \
-    chown -R user:user /app
-
-USER user
-
-# Set runtime environment variables
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH \
-    PYTHONPATH=/app/backend \
-    PORT=7860 \
+# Environment variables
+# Cloud Run injects PORT (default 8080), local override via -e PORT=3000
+ENV PYTHONPATH=/app/backend \
+    PORT=8080 \
     BACKEND_PORT=8000 \
     BACKEND_URL=http://127.0.0.1:8000 \
     WM_STORAGE_DIR=/app/wm_storage \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    NODE_ENV=production \
+    HOSTNAME="0.0.0.0"
 
 # Expose ports:
-# - 7860: Next.js Frontend (Hugging Face Spaces default public port)
-# - 8000: FastAPI Backend (API endpoints & Swagger documentation)
-EXPOSE 7860
+# - 8080: Next.js Frontend (Cloud Run default ingress)
+# - 8000: Internal FastAPI Backend
+EXPOSE 8080
 EXPOSE 8000
 
-# Launch both FastAPI and Next.js services
+# Launch services
 CMD ["/app/start.sh"]
